@@ -70,17 +70,8 @@ impl App {
                 Role::Assistant => ("* ", Color::Rgb(48, 10, 36)),
             };
 
-            let line = Line::from(vec![
-                Span::styled(prefix, Style::default().fg(Color::Gray)),
-                Span::styled(msg.content.as_str(), Style::default().fg(Color::White)),
-            ]);
-
-            let line_count = line.width().div_ceil(area.width as usize) + 2;
-
-            let paragraph = Paragraph::new(line)
-                .block(Block::default().padding(Padding::vertical(1)))
-                .wrap(Wrap { trim: false })
-                .bg(color);
+            let width = Line::from(msg.content.as_str()).width() as u16;
+            let line_count = width.div_ceil(area.width - 2).max(1) + 2;
 
             let rect = Rect {
                 x: area.x,
@@ -89,9 +80,22 @@ impl App {
                 height: line_count as u16,
             };
 
-            frame.render_widget(paragraph, rect);
+            let block = Block::default().padding(Padding::vertical(1)).bg(color);
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
 
-            y += line_count as u16;
+            let [prefix_area, content_area] = inner.layout(&Layout::horizontal(vec![
+                Constraint::Length(2),
+                Constraint::Fill(1),
+            ]));
+
+            let prefix_paragraph = Paragraph::new(prefix);
+            let content_paragraph = Paragraph::new(msg.content.as_str()).wrap(Wrap { trim: false });
+
+            frame.render_widget(prefix_paragraph, prefix_area);
+            frame.render_widget(content_paragraph, content_area);
+
+            y += line_count;
         }
     }
 
@@ -164,6 +168,11 @@ impl App {
         self.messages.push(Message {
             role: Role::User,
             content,
+        });
+
+        self.messages.push(Message {
+            role: Role::Assistant,
+            content: "this is a testing data1".to_string(),
         });
     }
 }
