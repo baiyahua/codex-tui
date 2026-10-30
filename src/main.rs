@@ -1,10 +1,18 @@
-use crossterm::event::{self, KeyCode, KeyModifiers};
+use crossterm::{
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind,
+    },
+    execute,
+};
 use ratatui::{
     DefaultTerminal, Frame,
+    buffer::Buffer,
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Padding, Paragraph, Wrap},
+    widgets::{
+        Block, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Widget, Wrap,
+    },
 };
 
 enum Role {
@@ -22,6 +30,7 @@ struct App {
     messages: Vec<Message>,
     input: String,
     running: bool,
+    scroll_from_bottom: u16,
 }
 
 impl App {
@@ -62,40 +71,83 @@ impl App {
     }
 
     fn render_output(&self, frame: &mut Frame, area: Rect) {
+        if self.messages.is_empty() {
+            return;
+        }
+
         let mut y = area.y;
 
-        for msg in &self.messages {
+        let heights: Vec<u16> = self
+            .messages
+            .iter()
+            .map(|msg| {
+                let width = Line::from(msg.content.as_str()).width() as u16;
+                width.div_ceil(area.width - 2).max(1) + 2
+            })
+            .collect();
+
+        let total_height = heights.iter().sum::<u16>();
+
+        let canvas = Rect {
+            x: 0,
+            y: 0,
+            width: area.width,
+            height: total_height,
+        };
+        let mut buffer = Buffer::empty(canvas);
+
+        for (height, msg) in heights.iter().zip(self.messages.iter()) {
             let (prefix, color) = match msg.role {
                 Role::User => ("> ", Color::Rgb(72, 39, 62)),
                 Role::Assistant => ("* ", Color::Rgb(48, 10, 36)),
             };
 
-            let width = Line::from(msg.content.as_str()).width() as u16;
-            let line_count = width.div_ceil(area.width - 2).max(1) + 2;
-
             let rect = Rect {
-                x: area.x,
+                x: 0,
                 y: y,
                 width: area.width,
-                height: line_count as u16,
+                height: *height,
             };
 
             let block = Block::default().padding(Padding::vertical(1)).bg(color);
             let inner = block.inner(rect);
-            frame.render_widget(block, rect);
+            block.render(rect, &mut buffer);
 
             let [prefix_area, content_area] = inner.layout(&Layout::horizontal(vec![
                 Constraint::Length(2),
                 Constraint::Fill(1),
             ]));
 
-            let prefix_paragraph = Paragraph::new(prefix);
-            let content_paragraph = Paragraph::new(msg.content.as_str()).wrap(Wrap { trim: false });
+            Paragraph::new(prefix).render(prefix_area, &mut buffer);
+            Paragraph::new(msg.content.as_str())
+                .wrap(Wrap { trim: false })
+                .render(content_area, &mut buffer);
 
-            frame.render_widget(prefix_paragraph, prefix_area);
-            frame.render_widget(content_paragraph, content_area);
+            y += height;
+        }
 
-            y += line_count;
+        let view_height = area.height.min(total_height);
+        let max_scroll_height = total_height.saturating_sub(view_height);
+        let begin = max_scroll_height.saturating_sub(self.scroll_from_bottom);
+        let target = frame.buffer_mut();
+
+        for y in 0..view_height {
+            for x in 0..area.width {
+                let source = buffer[(x, begin + y)].clone();
+                target[(x, y)] = source;
+            }
+        }
+
+        if total_height > view_height {
+            let mut scrollbar_state = ScrollbarState::new(total_height as usize)
+                .position(begin as usize)
+                .viewport_content_length(view_height as usize);
+
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                area,
+                &mut scrollbar_state,
+            );
         }
     }
 
@@ -136,23 +188,31 @@ impl App {
     }
 
     fn read_event(&mut self) -> anyhow::Result<()> {
-        let Some(event) = event::read()?.as_key_press_event() else {
-            return Ok(());
-        };
-
-        match event.code {
-            KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.running = false;
-            }
-            KeyCode::Backspace => {
-                self.input.pop();
-            }
-            KeyCode::Char(c) => {
-                self.input.push(c);
-            }
-            KeyCode::Enter => {
-                self.submit_input();
-            }
+        match event::read()? {
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(2);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(2);
+                }
+                _ => {}
+            },
+            Event::Key(key) => match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.running = false;
+                }
+                KeyCode::Backspace => {
+                    self.input.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.input.push(c);
+                }
+                KeyCode::Enter => {
+                    self.submit_input();
+                }
+                _ => {}
+            },
             _ => {}
         }
         Ok(())
@@ -177,8 +237,24 @@ impl App {
     }
 }
 
+struct MouseCaptureGuard;
+
+impl MouseCaptureGuard {
+    fn enable() -> Self {
+        let _ = execute!(std::io::stdout(), EnableMouseCapture);
+        Self
+    }
+}
+
+impl Drop for MouseCaptureGuard {
+    fn drop(&mut self) {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let mut app = App::default();
     app.running = true;
+    let _guard = MouseCaptureGuard::enable();
     ratatui::run(|terminal| app.run(terminal))
 }

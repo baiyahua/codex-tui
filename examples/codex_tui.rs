@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
 
 fn main() -> Result<()> {
@@ -30,6 +30,7 @@ struct App {
     input: String,
     messages: Vec<Message>,
     scroll: u16,
+    max_scroll: u16,
     should_quit: bool,
 }
 
@@ -54,8 +55,16 @@ impl App {
             (_, KeyCode::Backspace) => {
                 self.input.pop();
             }
+            (_, KeyCode::Up) => self.scroll = self.scroll.saturating_sub(1),
+            (_, KeyCode::Down) => {
+                self.scroll = self.scroll.saturating_add(1).min(self.max_scroll);
+            }
             (_, KeyCode::PageUp) => self.scroll = self.scroll.saturating_sub(5),
-            (_, KeyCode::PageDown) => self.scroll = self.scroll.saturating_add(5),
+            (_, KeyCode::PageDown) => {
+                self.scroll = self.scroll.saturating_add(5).min(self.max_scroll);
+            }
+            (_, KeyCode::Home) => self.scroll = 0,
+            (_, KeyCode::End) => self.scroll = self.max_scroll,
             (_, KeyCode::Char(character)) => self.input.push(character),
             _ => {}
         }
@@ -147,10 +156,20 @@ impl App {
             .wrap(Wrap { trim: false });
 
         let content_height = area.height.saturating_sub(1) as usize;
-        let max_scroll = line_count.saturating_sub(content_height) as u16;
-        self.scroll = self.scroll.min(max_scroll);
+        self.max_scroll = line_count.saturating_sub(content_height) as u16;
+        self.scroll = self.scroll.min(self.max_scroll);
 
         frame.render_widget(paragraph.scroll((self.scroll, 0)), area);
+
+        if self.max_scroll > 0 {
+            let mut scrollbar_state =
+                ScrollbarState::new(self.max_scroll as usize).position(self.scroll as usize);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                area,
+                &mut scrollbar_state,
+            );
+        }
     }
 
     fn render_input(&self, frame: &mut Frame, area: Rect) {
@@ -187,7 +206,7 @@ impl App {
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
-        let footer = Line::from(" Enter send  •  PgUp/PgDn scroll  •  Esc/Ctrl-C quit ")
+        let footer = Line::from(" Enter send  •  ↑/↓ PgUp/PgDn scroll  •  Esc/Ctrl-C quit ")
             .centered()
             .dark_gray();
         frame.render_widget(footer, area);
